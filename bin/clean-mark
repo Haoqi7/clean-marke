@@ -1,0 +1,118 @@
+#!/usr/bin/env node
+'use strict'
+
+const fs = require('fs')
+const path = require('path')
+const clean = require('../')
+const s = require('../lib/stats')
+const { urlPath } = require('../lib/util')
+const argv = require('minimist')(process.argv.slice(2))
+
+if (argv.help) {
+  const help = fs.readFileSync(path.join(__dirname, 'usage.txt'), 'utf8')
+  console.log(help.trim())
+  process.exit()
+}
+
+function getExtension (type) {
+  if (type === 'text') {
+    return '.txt'
+  } else if (type === 'html') {
+    return '.html'
+  } else {
+    return '.md'
+  }
+}
+
+function getMarker (type) {
+  if (type === 'text') {
+    return ['', '']
+  } else if (type === 'html') {
+    return ['<!--', '-->']
+  } else {
+    return ['---', '---']
+  }
+}
+
+function readStream(stream) {
+  return new Promise((resolve, reject) => {
+    let text = ''
+    stream.on('data', chunk => text += chunk)
+    stream.on('end', () => resolve(text))
+    stream.on('error', error => reject(error))
+  })
+}
+
+(async function main () {
+  let dict
+  const useDb = !argv.nodb
+  const useTitle = argv['name-title']
+  const type = (argv.t || argv.type || '').toLowerCase()
+  const output = argv.o || argv.output
+  const useStdout = argv.stdout
+  const ext = getExtension(type)
+  const mark = getMarker(type)
+
+  function formatOutput(dict) {
+    const stat = `paragraph=${s.paragraphCount(dict.text)} sentences=${s.sentenceCount(dict.text)}, words=${s.wordCount(dict.text)}`
+    return `${mark[0]}\nlink: ${dict.url}\ntitle: ${dict.title}\ndescription: ${dict.description}\nkeywords: ${dict.keywords}\nauthor: ${dict.author}\ndate: ${dict.date}\npublisher: ${dict.publisher}\nstats: ${stat}\n${mark[1]}\n${dict.text}`
+  }
+
+  if (argv._ && argv._.length) {
+    if (!useStdout) {
+      console.log('=>  Processing URLs ...')
+    }
+
+    // Cycle all provided URLs
+    for (const link of argv._) {
+      try {
+        dict = await clean(link, { useDatabase: useDb, fileType: type })
+        const text = formatOutput(dict)
+        if (useStdout) {
+          console.log(text.trim())
+          return
+        }
+        let path
+        if (useTitle) {
+          path = dict.title.replace(/[ \t-]+/g, '-') + ext
+        } else {
+          path = (output || urlPath(link)) + ext
+        }
+        console.log('>', path)
+        fs.writeFileSync(path, text)
+      } catch (err) {
+        console.error(err)
+      }
+    }
+  } else {
+    const { stdin } = process
+    if (stdin.isTTY) {
+      console.error('=>  Nothing to to!')
+      process.exit(1)
+    }
+
+    if (!useStdout) {
+      console.log('=>  Processing STDIN ...')
+    }
+    stdin.setEncoding('utf8')
+    const html = await readStream(stdin)
+    try {
+      dict = await clean(null, { html, fileType: type, proc: argv.proc })
+      const text = formatOutput(dict)
+      if (useStdout) {
+        console.log(text.trim())
+        return
+      }
+      const path = dict.title.replace(/[ \t-]+/g, '-') + ext
+      console.log('>', path)
+      fs.writeFileSync(path, text)
+    } catch (err) {
+      console.error(err)
+      process.exit(1)
+    }
+  }
+
+  if (!useStdout) {
+    console.log('=>  URL converted!')
+  }
+})()
